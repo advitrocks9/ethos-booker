@@ -3,18 +3,14 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-01-28",
   "compatibility_flags": ["nodejs_compat"],
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "MCP_OBJECT",
-        "class_name": "EthosAgent"
-      }
-    ]
-  },
-  "migrations": [
+  "kv_namespaces": [
     {
-      "tag": "v1",
-      "new_sqlite_classes": ["EthosAgent"]
+      "binding": "OAUTH_KV",
+      "id": "23829f7a3f164635bb00374bd5b58aca"
     }
+  ],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["EthosAgent"] },
+    { "tag": "v2", "deleted_classes": ["EthosAgent"] }
   ]
 }

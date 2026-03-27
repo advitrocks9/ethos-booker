@@ -2,13 +2,12 @@
 
 MCP server for booking gym sessions at Imperial College's Ethos sports centre.
 
-Runs on Cloudflare Workers as a remote MCP server. Connect it to Claude, Cursor, or any MCP client and book/cancel gym slots through natural language.
+Runs on Cloudflare Workers as a remote MCP server with OAuth authentication. Connect it to Claude, Cursor, or any MCP client and book/cancel gym slots through natural language. You sign in once via a web page -- your credentials never pass through the AI model.
 
 ## Tools
 
 | Tool | What it does |
 |------|-------------|
-| `login` | Authenticate with your Ethos email and password |
 | `list_sessions` | Show available sessions for a date, filterable by location |
 | `book_session` | Book a free session by date, time, and location |
 | `cancel_booking` | Cancel a booking by date and optional time |
@@ -17,41 +16,63 @@ Runs on Cloudflare Workers as a remote MCP server. Connect it to Claude, Cursor,
 
 ## Setup
 
-### Connect to the hosted server
+### Claude.ai (web/desktop/mobile)
 
-The server is already deployed. Add it as a remote MCP connector:
+1. Go to **Settings > Connectors > Add custom connector**
+2. Paste the server URL:
+   ```
+   https://ethos-booker.advitarora2.workers.dev/mcp
+   ```
+3. Leave OAuth Client ID and Client Secret blank
+4. Claude.ai will open a login page in your browser when you first use a tool
+5. Sign in with your Imperial Ethos email and password -- this goes directly to Imperial's servers
+6. Done. You won't need to log in again until the token expires (30 days)
 
-**Claude.ai (web/desktop):** Settings > Connectors > Add custom connector > paste:
-```
-https://ethos-booker.advitarora2.workers.dev/mcp
-```
-Leave OAuth fields blank. The server is authless at the MCP layer; gym authentication happens via the `login` tool.
+### Claude Code
 
-**Claude Code:**
 ```bash
 claude mcp add ethos-booker --transport http https://ethos-booker.advitarora2.workers.dev/mcp
 ```
 
-**Cursor:** Settings > Tools & MCP > Add > paste the URL above.
+### Cursor
 
-### Deploy your own
-
-```bash
-git clone https://github.com/advitarora/ethos-booker.git
-cd ethos-booker
-npm install
-npx wrangler deploy
-```
-
-You will need a Cloudflare account. The free tier is more than enough.
+Settings > Tools & MCP > Add > paste the URL above.
 
 ## How it works
 
-The Ethos booking system (Gladstone Leisure Hub) exposes a REST API behind an OIDC login. This server handles the full auth flow - navigating the redirect chain, extracting XSRF tokens, posting credentials, and pulling the access token from the OIDC form_post response.
+The server implements OAuth 2.1 with PKCE via `@cloudflare/workers-oauth-provider`. When a client like Claude.ai connects:
 
-Once authenticated, sessions are fetched from the timetable API and bookings go through the OneClick/Foc endpoint (free-of-charge one-click booking). If a stale basket blocks the OneClick path, the server automatically clears it and retries.
+1. The MCP endpoint returns 401 with a `WWW-Authenticate` header
+2. The client discovers OAuth endpoints from `/.well-known/oauth-protected-resource`
+3. The client opens a browser popup to `/authorize`
+4. You enter your Ethos credentials on the login page hosted on the worker
+5. The worker authenticates with Imperial's OIDC system, verifies your identity
+6. An OAuth token is issued to the client -- your password is never exposed to the AI
+7. On subsequent requests, the client sends the Bearer token and the worker re-authenticates with Ethos as needed
 
-Session state (auth token, cookies) is held in a Cloudflare Durable Object, so each MCP session gets its own isolated state.
+### Authentication
+
+The Ethos booking system (Gladstone Leisure Hub) uses an OIDC login flow behind Imperial's identity server. The worker handles the full redirect chain: navigating to the login page, extracting XSRF tokens, posting credentials, and pulling the access token from the OIDC form_post response.
+
+### Booking
+
+Sessions are fetched from the timetable API. Bookings go through the OneClick/Foc endpoint (free-of-charge one-click booking). If a stale basket blocks the OneClick path, the server automatically clears it and retries.
+
+## Deploy your own
+
+```bash
+git clone https://github.com/advitrocks9/ethos-booker.git
+cd ethos-booker
+npm install
+
+# create a KV namespace for OAuth token storage
+npx wrangler kv namespace create OAUTH_KV
+# update the KV namespace ID in wrangler.jsonc
+
+npx wrangler deploy
+```
+
+Requires a Cloudflare account. The free tier is more than enough.
 
 ## Constraints
 
@@ -63,5 +84,6 @@ Session state (auth token, cookies) is held in a Cloudflare Durable Object, so e
 ## Stack
 
 - TypeScript on Cloudflare Workers
-- Cloudflare Agents SDK (`McpAgent` + Durable Objects)
+- `@cloudflare/workers-oauth-provider` for OAuth 2.1
 - `@modelcontextprotocol/sdk` for the MCP protocol layer
+- Cloudflare KV for OAuth token persistence

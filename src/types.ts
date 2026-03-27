@@ -125,13 +125,6 @@ export interface BasketItem {
   };
 }
 
-export interface AgentState {
-  authToken: string | null;
-  personId: number | null;
-  memberNo: number | null;
-  cookies: string | null;
-}
-
 export interface AuthResult {
   accessToken: string;
   personId: number;
@@ -143,6 +136,22 @@ export interface BookingConfirmation {
   ConfirmationUrl: string;
 }
 
+// props stored in the OAuth token, available via getMcpAuthContext()
+export interface EthosProps {
+  email: string;
+  password: string;
+  personId: number;
+  memberNo: number;
+}
+
 export interface Env {
-  MCP_OBJECT: DurableObjectNamespace;
+  OAUTH_PROVIDER: {
+    completeAuthorization(params: {
+      request: unknown;
+      userId: string;
+      scope: string[];
+      props: EthosProps;
+    }): Promise<{ redirectTo: string }>;
+  };
+  OAUTH_KV: KVNamespace;
 }
