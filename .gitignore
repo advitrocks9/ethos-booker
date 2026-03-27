@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.dev.vars
+.env
+*.auth.json
+.wrangler/
+.claude/
+.DS_Store
