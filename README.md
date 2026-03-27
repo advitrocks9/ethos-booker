@@ -26,7 +26,7 @@ Runs on Cloudflare Workers as a remote MCP server with OAuth authentication. Con
 3. Leave OAuth Client ID and Client Secret blank
 4. Claude.ai will open a login page in your browser when you first use a tool
 5. Sign in with your Imperial Ethos email and password -- this goes directly to Imperial's servers
-6. Done. You won't need to log in again until the token expires (30 days)
+6. Done. Access tokens last 24 hours; the refresh token lasts 30 days, so most clients will silently renew without re-prompting
 
 ### Claude Code
 

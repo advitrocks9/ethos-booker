@@ -42,7 +42,7 @@ function loginPage(oauthRequest: string, error?: string): Response {
       <input type="password" id="password" name="password" required>
       <button type="submit">Sign in</button>
     </form>
-    <p class="note">Your credentials go directly to Imperial's servers. They are not stored in plaintext or shared with the AI model.</p>
+    <p class="note">Your password is encrypted within your OAuth session and never logged or shared with the AI model. This server is <a href="https://github.com/advitrocks9/ethos-booker" style="color:#666">open source</a>.</p>
   </div>
 </body>
 </html>`,

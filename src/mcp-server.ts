@@ -6,7 +6,7 @@ import { authenticate } from "./ethos-auth";
 import { listSessions, bookSession, getBookings, cancelBooking } from "./ethos-api";
 import { formatSessionLine, locationFilter, formatTime } from "./utils";
 
-// per-request cache so we only authenticate with Ethos once per MCP session
+// cache within a single worker isolate to avoid re-authenticating on every tool call
 let cachedAuth: { token: string; personId: number; memberNo: number; cookies: string } | null = null;
 
 async function getEthosAuth(): Promise<{ token: string; personId: number; memberNo: number; cookies: string }> {
@@ -89,7 +89,7 @@ export function createServer(): McpServer {
       if (match.AvailablePlaces === 0) {
         return text(`${match.DisplayName} is full (0/${match.TotalPlaces})`);
       }
-      const confirmation = await bookSession(token, match, personId, cookies);
+      await bookSession(token, match, personId, cookies);
       return text(
         `Booked: ${match.DisplayName} | ${date} ${time}-${formatTime(match.EndTime)} | ${match.LocationDescription}`
       );

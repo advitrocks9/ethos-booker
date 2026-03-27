@@ -3,6 +3,7 @@ dist/
 .dev.vars
 .env
 *.auth.json
+.ethos-auth.json
 .wrangler/
 .claude/
 .DS_Store
