@@ -90,7 +90,7 @@ export class EthosAgent extends McpAgent<Env, AgentState> {
         if (match.AvailablePlaces === 0) {
           return text(`${match.DisplayName} is full (0/${match.TotalPlaces})`);
         }
-        const confirmation = await bookSession(token, match, personId, cookies);
+        await bookSession(token, match, personId, cookies);
         return text(
           `Booked: ${match.DisplayName} | ${date} ${time}-${formatTime(match.EndTime)} | ${match.LocationDescription}`
         );
