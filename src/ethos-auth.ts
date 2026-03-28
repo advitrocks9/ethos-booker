@@ -1,5 +1,5 @@
 import type { AuthResult } from "./types";
-import { ethosBaseUrl, parseFormField, decodeJwtPayload } from "./utils";
+import { ethosBaseUrl, parseFormField, decodeAndValidateJwt } from "./utils";
 
 class CookieJar {
   private cookies = new Map<string, string>();
@@ -58,7 +58,6 @@ async function followRedirects(
         ? location
         : new URL(location, currentUrl).toString();
 
-      // POST redirects become GETs per HTTP spec
       currentInit = {
         redirect: "manual",
         headers: { Cookie: jar.header() },
@@ -72,9 +71,7 @@ async function followRedirects(
   throw new Error("Too many redirects");
 }
 
-// Authenticates against Ethos via the OIDC flow:
-// GET Members/Home -> redirects to login -> POST credentials -> follow OIDC
-// redirects -> extract access_token from the form_post response page.
+// OIDC flow: Members/Home -> login redirect -> POST creds -> extract access_token
 export async function authenticate(
   email: string,
   password: string
@@ -88,7 +85,8 @@ export async function authenticate(
   );
 
   if (!loginUrl.includes("/identity/login")) {
-    throw new Error(`Expected login page, got: ${loginUrl}`);
+    console.error(`Auth flow error: expected login page, got: ${loginUrl}`);
+    throw new Error("Ethos login page unavailable — try again later");
   }
 
   const loginHtml = await loginPageRes.text();
@@ -138,14 +136,15 @@ export async function authenticate(
   }
 
   if (!accessToken) {
-    throw new Error(
-      `Could not extract access token. Final URL: ${postFinalUrl}. ` +
+    console.error(
+      `Token extraction failed. Final URL: ${postFinalUrl}. ` +
       `Response length: ${responseHtml.length}. ` +
-      `Has form fields: ${responseHtml.includes('<input')}`
+      `Has form fields: ${responseHtml.includes("<input")}`
     );
+    throw new Error("Authentication succeeded but failed to extract session token — try again");
   }
 
-  const claims = decodeJwtPayload(accessToken);
+  const claims = decodeAndValidateJwt(accessToken);
   const personId = Number(claims.dimension_person_pk ?? claims.sub);
   const memberNo = Number(claims.member_id ?? 0);
 
@@ -164,7 +163,8 @@ export async function authenticate(
         cookies: jar.header(),
       };
     }
-    throw new Error("Could not determine personId from token or userinfo");
+    console.error("Could not determine personId from token claims or userinfo endpoint");
+    throw new Error("Authentication failed — unable to identify user account");
   }
 
   return { accessToken, personId, memberNo, cookies: jar.header() };

@@ -2,12 +2,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getMcpAuthContext } from "agents/mcp";
 import { z } from "zod";
 import type { EthosSession, EthosProps } from "./types";
-import { authenticate } from "./ethos-auth";
 import { listSessions, bookSession, getBookings, cancelBooking } from "./ethos-api";
 import { formatSessionLine, locationFilter, formatTime } from "./utils";
 
-// ethos enforces these server-side — surface them so callers don't have to
-// discover limits through trial-and-error
+// surfaced so callers don't discover limits through trial-and-error
 const LIMITS = {
   bookingsPerDay: 2,
   advanceDays: 7,
@@ -24,25 +22,19 @@ function limitsBlock(): string {
   ].join("\n");
 }
 
-// avoid re-auth on every tool call within the same worker isolate
-let cachedAuth: { token: string; personId: number; memberNo: number; cookies: string } | null = null;
-
-async function getEthosAuth(): Promise<{ token: string; personId: number; memberNo: number; cookies: string }> {
-  if (cachedAuth) return cachedAuth;
-
-  const { props } = getMcpAuthContext<EthosProps>();
-  if (!props?.email || !props?.password) {
+function getEthosAuth(): { token: string; personId: number; memberNo: number; cookies: string } {
+  const ctx = getMcpAuthContext();
+  const props = ctx?.props as EthosProps | undefined;
+  if (!props?.accessToken) {
     throw new Error("Not authenticated. Please reconnect and log in via the OAuth flow.");
   }
 
-  const result = await authenticate(props.email, props.password);
-  cachedAuth = {
-    token: result.accessToken,
-    personId: result.personId,
-    memberNo: result.memberNo,
-    cookies: result.cookies,
+  return {
+    token: props.accessToken,
+    personId: props.personId,
+    memberNo: props.memberNo,
+    cookies: props.cookies,
   };
-  return cachedAuth;
 }
 
 function text(t: string) {
@@ -53,21 +45,22 @@ function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function createServer(): McpServer {
-  cachedAuth = null;
+const dateSchema = z.iso.date().describe("YYYY-MM-DD, today or within 7 days");
+const timeSchema = z.string().regex(/^\d{2}:\d{2}$/, "Expected HH:MM").describe("Start time HH:MM 24h, e.g. '14:00'. Must match exactly.");
 
+export function createServer(): McpServer {
   const server = new McpServer({ name: "ethos-booker", version: "1.0.0" });
 
   server.tool(
     "list_sessions",
     `List gym/swim/sport sessions for a single date. Returns a table: Name | Time | Spaces (available/total) | Location | Price. Date must be within ${LIMITS.advanceDays} days of today. Returns up to ${LIMITS.listResults} results. Set available_only=true to hide fully booked sessions. Location codes: gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool, all=everything.`,
     {
-      date: z.string().describe("YYYY-MM-DD, today or within 7 days"),
+      date: dateSchema,
       location: z.enum(["gym", "sw7", "pool", "all"]).default("all").describe("gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool, all=no filter"),
       available_only: z.boolean().default(false).describe("If true, hide sessions with 0 open spots. Set true when planning to book."),
     },
     async ({ date, location, available_only }) => {
-      const { token, personId, cookies } = await getEthosAuth();
+      const { token, personId, cookies } = getEthosAuth();
       const sessions = await listSessions(token, personId, date, cookies);
       let filtered = sessions.filter(locationFilter(location));
       const countBefore = filtered.length;
@@ -96,12 +89,12 @@ export function createServer(): McpServer {
     "book_session",
     `Book a single free (£0) gym/swim session. Max ${LIMITS.bookingsPerDay} bookings per day, date must be within ${LIMITS.advanceDays} days of today. Returns available alternatives if session is full or not found. Call my_bookings first to check remaining daily capacity. For multiple sessions, call this tool once per session.`,
     {
-      date: z.string().describe("YYYY-MM-DD, today or within 7 days"),
-      time: z.string().describe("Start time HH:MM 24h, e.g. '14:00'. Must match exactly."),
+      date: dateSchema,
+      time: timeSchema,
       location: z.enum(["gym", "sw7", "pool"]).default("gym").describe("gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool"),
     },
     async ({ date, time, location }) => {
-      const { token, personId, cookies } = await getEthosAuth();
+      const { token, personId, cookies } = getEthosAuth();
 
       // bail early if daily cap already hit
       const bookings = await getBookings(token, cookies);
@@ -162,11 +155,11 @@ export function createServer(): McpServer {
     "cancel_booking",
     "Cancel an existing booking by date and optional time. Without time, cancels the first cancellable booking that day. Only CanCancel=true bookings (shown in my_bookings) can be cancelled. Cancelling frees a daily booking slot.",
     {
-      date: z.string().describe("YYYY-MM-DD"),
-      time: z.string().optional().describe("HH:MM 24h. Omit to cancel first match on this date."),
+      date: dateSchema,
+      time: timeSchema.optional().describe("HH:MM 24h. Omit to cancel first match on this date."),
     },
     async ({ date, time }) => {
-      const { token, cookies } = await getEthosAuth();
+      const { token, cookies } = getEthosAuth();
       const bookings = await getBookings(token, cookies);
       const cancellable = bookings.filter((b) => b.CanCancel && b.StartTime.startsWith(date));
       if (cancellable.length === 0) {
@@ -193,7 +186,7 @@ export function createServer(): McpServer {
     `Show upcoming bookings with per-day usage out of ${LIMITS.bookingsPerDay} daily slots. Returns: Activity | Date | Time | Location | CanCancel. Call this before book_session to check remaining capacity.`,
     {},
     async () => {
-      const { token, cookies } = await getEthosAuth();
+      const { token, cookies } = getEthosAuth();
       const bookings = await getBookings(token, cookies);
       const now = new Date().toISOString();
       const upcoming = bookings
@@ -235,14 +228,14 @@ export function createServer(): McpServer {
     "search_sessions",
     `Search for available sessions across a date range (max ${LIMITS.searchDays} days). Only returns sessions with open spots — fully booked are excluded. Results grouped by date. Time filters: morning=07-12, afternoon=12-18, evening=18+. Dates must be within ${LIMITS.advanceDays} days of today.`,
     {
-      start_date: z.string().describe("YYYY-MM-DD"),
-      end_date: z.string().describe("YYYY-MM-DD, max 7 days from start_date"),
+      start_date: dateSchema,
+      end_date: z.iso.date().describe("YYYY-MM-DD, max 7 days from start_date"),
       time_preference: z.enum(["morning", "afternoon", "evening", "any"]).default("any").describe("morning=07-12, afternoon=12-18, evening=18+, any=all"),
       activity: z.string().optional().describe("Case-insensitive partial match, e.g. 'gym' or 'swim'"),
       location: z.enum(["gym", "sw7", "pool", "all"]).default("all").describe("gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool, all=no filter"),
     },
     async ({ start_date, end_date, time_preference, activity, location }) => {
-      const { token, personId, cookies } = await getEthosAuth();
+      const { token, personId, cookies } = getEthosAuth();
       const timeFilter = (s: EthosSession): boolean => {
         const hour = parseInt(formatTime(s.StartTime).split(":")[0] ?? "0");
         switch (time_preference) {

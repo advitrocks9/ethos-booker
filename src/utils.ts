@@ -6,12 +6,21 @@ export function ethosBaseUrl(): string {
   return BASE_URL;
 }
 
-// Ethos API expects dates as "YYYY/MM/DD 00:00:00.000"
+export function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
+// Ethos API expects "YYYY/MM/DD 00:00:00.000"
 export function formatEthosDate(dateStr: string): string {
   return dateStr.replace(/-/g, "/") + " 00:00:00.000";
 }
 
-// Cancel endpoint expects full datetime: "YYYY/MM/DD HH:mm:ss.SSS"
+// cancel endpoint wants "YYYY/MM/DD HH:mm:ss.SSS"
 export function formatCancelDate(isoDate: string): string {
   const d = new Date(isoDate);
   const y = d.getFullYear();
@@ -60,30 +69,38 @@ export function buildBasketItem(session: EthosSession, personId: number): Basket
 }
 
 export function parseFormField(html: string, fieldName: string): string | null {
+  const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const regex = new RegExp(
-    `<input[^>]*name=["']${fieldName}["'][^>]*value=["']([^"']*)["']`,
+    `<input[^>]*name=["']${escaped}["'][^>]*value=["']([^"']*)["']`,
     "i"
   );
   const match = html.match(regex);
   if (match) return match[1] ?? null;
-  // handle reversed attribute order
+  // some pages emit value before name
   const regex2 = new RegExp(
-    `<input[^>]*value=["']([^"']*)["'][^>]*name=["']${fieldName}["']`,
+    `<input[^>]*value=["']([^"']*)["'][^>]*name=["']${escaped}["']`,
     "i"
   );
   const match2 = html.match(regex2);
   return match2?.[1] ?? null;
 }
 
-// base64url decode without crypto verification (we just need the claims)
-export function decodeJwtPayload(token: string): Record<string, unknown> {
+// no sig verification — Ethos doesn't publish JWKS, we only need personId
+export function decodeAndValidateJwt(token: string): Record<string, unknown> {
   const parts = token.split(".");
   const payload = parts[1];
   if (!payload) throw new Error("Invalid JWT");
   const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
   const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
   const json = atob(padded);
-  return JSON.parse(json) as Record<string, unknown>;
+  const claims = JSON.parse(json) as Record<string, unknown>;
+
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof claims.exp === "number" && claims.exp < now) {
+    throw new Error("Ethos token expired");
+  }
+
+  return claims;
 }
 
 export function formatTime(isoDate: string): string {

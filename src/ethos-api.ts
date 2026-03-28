@@ -17,14 +17,13 @@ async function apiGet<T>(path: string, token: string, cookies?: string): Promise
   const res = await fetch(`${API}${path}`, { headers: authHeaders(token, cookies) });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`API ${res.status}: ${body.slice(0, 200)}`);
+    console.error(`API error ${path} ${res.status}: ${body.slice(0, 500)}`);
+    throw new Error(`Ethos API request failed (${res.status})`);
   }
   return res.json() as Promise<T>;
 }
 
-// The Gladstone platform ties baskets to the user account. If a previous
-// booking attempt left stale items, OneClick/Foc refuses to run. We try
-// several undocumented endpoints to force-clear the basket state.
+// stale basket items from failed bookings block OneClick/Foc — brute-force clear them
 async function clearStaleBasket(token: string, cookies?: string): Promise<string> {
   const headers = authHeaders(token, cookies);
   const results: string[] = [];
@@ -35,7 +34,7 @@ async function clearStaleBasket(token: string, cookies?: string): Promise<string
   const r2 = await fetch(`${API}/Basket/ClearBasket`, { method: "POST", headers, body: "{}" }).catch(() => null);
   if (r2) results.push(`POST /ClearBasket: ${r2.status}`);
 
-  // create a fresh basket and immediately finalise it (empty) to replace the stale one
+  // create+finalise an empty basket to replace the stale one
   const createRes = await fetch(`${API}/Basket`, { method: "POST", headers, body: "{}" }).catch(() => null);
   if (createRes?.ok) {
     const body = await createRes.text();
@@ -70,11 +69,16 @@ export async function listSessions(
   cookies?: string
 ): Promise<EthosSession[]> {
   const ethosDate = encodeURIComponent(formatEthosDate(date));
-  return apiGet<EthosSession[]>(
+  const data = await apiGet<unknown>(
     `/Sites/1/Timetables/Bookings?date=${ethosDate}&pid=${personId}`,
     token,
     cookies
   );
+  if (!Array.isArray(data)) {
+    console.error("listSessions: expected array, got", typeof data);
+    throw new Error("Unexpected response from Ethos timetable API");
+  }
+  return data as EthosSession[];
 }
 
 async function tryOneClick(
@@ -97,13 +101,12 @@ async function tryOneClick(
   }
 
   if (!res.ok) {
+    console.error(`OneClick booking failed (${res.status}): ${body.slice(0, 500)}`);
     let msg = `Booking failed (${res.status})`;
     try {
       const err = JSON.parse(body) as { Message?: string };
       if (err.Message) msg = err.Message;
-    } catch {
-      msg += `: ${body.slice(0, 200)}`;
-    }
+    } catch { /* not JSON */ }
     const basketError = msg.toLowerCase().includes("basket");
     return { ok: false, basketError, msg };
   }
@@ -124,14 +127,20 @@ export async function bookSession(
     const clearResult = await clearStaleBasket(token, cookies);
     const retry = await tryOneClick(token, session, personId, cookies);
     if (retry.ok) return retry.data;
-    throw new Error(`${retry.msg}. Basket clearing attempt: ${clearResult}`);
+    console.error(`Basket clear attempt: ${clearResult}`);
+    throw new Error(retry.msg);
   }
 
   throw new Error(first.msg);
 }
 
 export async function getBookings(token: string, cookies?: string): Promise<EthosBooking[]> {
-  return apiGet<EthosBooking[]>("/Bookings/History", token, cookies);
+  const data = await apiGet<unknown>("/Bookings/History", token, cookies);
+  if (!Array.isArray(data)) {
+    console.error("getBookings: expected array, got", typeof data);
+    throw new Error("Unexpected response from Ethos bookings API");
+  }
+  return data as EthosBooking[];
 }
 
 export async function cancelBooking(
@@ -161,6 +170,7 @@ export async function cancelBooking(
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Cancel failed (${res.status}): ${body.slice(0, 200)}`);
+    console.error(`Cancel failed (${res.status}): ${body.slice(0, 500)}`);
+    throw new Error(`Cancellation failed (${res.status})`);
   }
 }

@@ -136,10 +136,9 @@ export interface BookingConfirmation {
   ConfirmationUrl: string;
 }
 
-// props stored in the OAuth token, available via getMcpAuthContext()
 export interface EthosProps {
-  email: string;
-  password: string;
+  accessToken: string;
+  cookies: string;
   personId: number;
   memberNo: number;
 }
@@ -154,4 +153,6 @@ export interface Env {
     }): Promise<{ redirectTo: string }>;
   };
   OAUTH_KV: KVNamespace;
+  AUTH_LIMITER: RateLimit;
+  API_LIMITER: RateLimit;
 }

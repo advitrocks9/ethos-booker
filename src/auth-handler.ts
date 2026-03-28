@@ -1,13 +1,25 @@
 import type { Env } from "./types";
 import { authenticate } from "./ethos-auth";
+import { escapeHtml } from "./utils";
+
+const SECURITY_HEADERS: HeadersInit = {
+  "Content-Type": "text/html;charset=UTF-8",
+  "Content-Security-Policy":
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Cross-Origin-Opener-Policy": "same-origin",
+};
 
 function loginPage(oauthRequest: string, error?: string): Response {
   const errorHtml = error
-    ? `<p style="color:#c0392b;margin-bottom:16px">${error}</p>`
+    ? `<p style="color:#c0392b;margin-bottom:16px">${escapeHtml(error)}</p>`
     : "";
 
-  // escape for safe embedding in HTML attribute
-  const escaped = oauthRequest.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  const escaped = escapeHtml(oauthRequest);
 
   return new Response(
     `<!DOCTYPE html>
@@ -42,12 +54,16 @@ function loginPage(oauthRequest: string, error?: string): Response {
       <input type="password" id="password" name="password" required>
       <button type="submit">Sign in</button>
     </form>
-    <p class="note">Your password is encrypted within your OAuth session and never logged or shared with the AI model. This server is <a href="https://github.com/advitrocks9/ethos-booker" style="color:#666">open source</a>.</p>
+    <p class="note">Your credentials are used once to obtain a session token, then discarded. This server is <a href="https://github.com/advitrocks9/ethos-booker" style="color:#666">open source</a>.</p>
   </div>
 </body>
 </html>`,
-    { headers: { "Content-Type": "text/html" } }
+    { headers: SECURITY_HEADERS }
   );
+}
+
+function clientIp(request: Request): string {
+  return request.headers.get("CF-Connecting-IP") ?? "unknown";
 }
 
 export const authHandler = {
@@ -55,13 +71,17 @@ export const authHandler = {
     const url = new URL(request.url);
 
     if (url.pathname === "/authorize" && request.method === "GET") {
-      // OAuthProvider forwards the original authorize request here after validation.
-      // capture all query params as a JSON blob to round-trip through the form.
       const oauthParams = Object.fromEntries(url.searchParams.entries());
       return loginPage(JSON.stringify(oauthParams));
     }
 
     if (url.pathname === "/authorize" && request.method === "POST") {
+      const ip = clientIp(request);
+      const { success } = await env.AUTH_LIMITER.limit({ key: ip });
+      if (!success) {
+        return loginPage("{}", "Too many login attempts — please wait a minute.");
+      }
+
       const formData = await request.formData();
       const oauthRequestRaw = formData.get("oauth_request") as string;
       const email = formData.get("email") as string;
@@ -73,7 +93,7 @@ export const authHandler = {
 
       let params: Record<string, string>;
       try {
-        params = JSON.parse(oauthRequestRaw);
+        params = JSON.parse(oauthRequestRaw) as Record<string, string>;
       } catch {
         return loginPage("{}", "Invalid request state. Please try reconnecting.");
       }
@@ -86,7 +106,6 @@ export const authHandler = {
         return loginPage(oauthRequestRaw, msg);
       }
 
-      // completeAuthorization expects camelCase field names
       const oauthRequest = {
         clientId: params.client_id,
         redirectUri: params.redirect_uri,
@@ -103,8 +122,8 @@ export const authHandler = {
         userId: String(authResult.personId),
         scope: params.scope?.split(" ") ?? ["ethos"],
         props: {
-          email,
-          password,
+          accessToken: authResult.accessToken,
+          cookies: authResult.cookies,
           personId: authResult.personId,
           memberNo: authResult.memberNo,
         },
