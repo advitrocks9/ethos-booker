@@ -5,7 +5,12 @@ class CookieJar {
   private cookies = new Map<string, string>();
 
   capture(response: Response): void {
-    const setCookies = response.headers.getAll?.("set-cookie") ?? [];
+    const headers = response.headers as Headers & {
+      getAll?: (name: string) => string[];
+      getSetCookie?: () => string[];
+    };
+    let setCookies: string[] =
+      headers.getAll?.("set-cookie") ?? headers.getSetCookie?.() ?? [];
     if (setCookies.length === 0) {
       const single = response.headers.get("set-cookie");
       if (single) setCookies.push(single);

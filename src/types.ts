@@ -136,23 +136,20 @@ export interface BookingConfirmation {
   ConfirmationUrl: string;
 }
 
-export interface EthosProps {
-  accessToken: string;
-  cookies: string;
-  personId: number;
-  memberNo: number;
-}
-
 export interface Env {
   OAUTH_PROVIDER: {
+    parseAuthRequest(request: Request): Promise<unknown>;
     completeAuthorization(params: {
       request: unknown;
       userId: string;
       scope: string[];
-      props: EthosProps;
+      props: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
     }): Promise<{ redirectTo: string }>;
   };
   OAUTH_KV: KVNamespace;
   AUTH_LIMITER: RateLimit;
   API_LIMITER: RateLimit;
+  ETHOS_EMAIL: string;
+  ETHOS_PASSWORD: string;
 }

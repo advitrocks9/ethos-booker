@@ -1,11 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { getMcpAuthContext } from "agents/mcp";
 import { z } from "zod";
-import type { EthosSession, EthosProps } from "./types";
+import type { EthosSession, Env } from "./types";
 import { listSessions, bookSession, getBookings, cancelBooking } from "./ethos-api";
+import { resolveEthosSession, invalidateEthosSession } from "./session";
 import { formatSessionLine, locationFilter, formatTime } from "./utils";
 
-// surfaced so callers don't discover limits through trial-and-error
 const LIMITS = {
   bookingsPerDay: 2,
   advanceDays: 7,
@@ -22,21 +21,6 @@ function limitsBlock(): string {
   ].join("\n");
 }
 
-function getEthosAuth(): { token: string; personId: number; memberNo: number; cookies: string } {
-  const ctx = getMcpAuthContext();
-  const props = ctx?.props as EthosProps | undefined;
-  if (!props?.accessToken) {
-    throw new Error("Not authenticated. Please reconnect and log in via the OAuth flow.");
-  }
-
-  return {
-    token: props.accessToken,
-    personId: props.personId,
-    memberNo: props.memberNo,
-    cookies: props.cookies,
-  };
-}
-
 function text(t: string) {
   return { content: [{ type: "text" as const, text: t }] };
 }
@@ -48,7 +32,36 @@ function todayStr(): string {
 const dateSchema = z.iso.date().describe("YYYY-MM-DD, today or within 7 days");
 const timeSchema = z.string().regex(/^\d{2}:\d{2}$/, "Expected HH:MM").describe("Start time HH:MM 24h, e.g. '14:00'. Must match exactly.");
 
-export function createServer(): McpServer {
+// Wrap a tool body so that Ethos 401-style failures (HTML responses, "session
+// expired" errors) automatically invalidate the cache and retry once.
+async function withSession<T>(
+  env: Env,
+  fn: (session: { token: string; personId: number; memberNo: number; cookies: string }) => Promise<T>
+): Promise<T> {
+  const s1 = await resolveEthosSession(env);
+  try {
+    return await fn({
+      token: s1.accessToken,
+      personId: s1.personId,
+      memberNo: s1.memberNo,
+      cookies: s1.cookies,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const stale = /session may have expired|expired|Authorization|401|403/i.test(msg);
+    if (!stale) throw e;
+    await invalidateEthosSession(env);
+    const s2 = await resolveEthosSession(env);
+    return fn({
+      token: s2.accessToken,
+      personId: s2.personId,
+      memberNo: s2.memberNo,
+      cookies: s2.cookies,
+    });
+  }
+}
+
+export function createServer(env: Env): McpServer {
   const server = new McpServer({ name: "ethos-booker", version: "1.0.0" });
 
   server.tool(
@@ -59,8 +72,7 @@ export function createServer(): McpServer {
       location: z.enum(["gym", "sw7", "pool", "all"]).default("all").describe("gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool, all=no filter"),
       available_only: z.boolean().default(false).describe("If true, hide sessions with 0 open spots. Set true when planning to book."),
     },
-    async ({ date, location, available_only }) => {
-      const { token, personId, cookies } = getEthosAuth();
+    async ({ date, location, available_only }) => withSession(env, async ({ token, personId, cookies }) => {
       const sessions = await listSessions(token, personId, date, cookies);
       let filtered = sessions.filter(locationFilter(location));
       const countBefore = filtered.length;
@@ -82,7 +94,7 @@ export function createServer(): McpServer {
       const rows = capped.map(formatSessionLine);
       const footer = sorted.length > LIMITS.listResults ? `\n... and ${sorted.length - LIMITS.listResults} more` : "";
       return text(`${meta}\n\n${header}\n${sep}\n${rows.join("\n")}${footer}`);
-    }
+    })
   );
 
   server.tool(
@@ -93,10 +105,7 @@ export function createServer(): McpServer {
       time: timeSchema,
       location: z.enum(["gym", "sw7", "pool"]).default("gym").describe("gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool"),
     },
-    async ({ date, time, location }) => {
-      const { token, personId, cookies } = getEthosAuth();
-
-      // bail early if daily cap already hit
+    async ({ date, time, location }) => withSession(env, async ({ token, personId, cookies }) => {
       const bookings = await getBookings(token, cookies);
       const onDate = bookings.filter((b) => b.StartTime.startsWith(date));
       if (onDate.length >= LIMITS.bookingsPerDay) {
@@ -148,7 +157,7 @@ export function createServer(): McpServer {
         `BOOKED: ${match.DisplayName} | ${date} ${time}-${formatTime(match.EndTime)} | ${match.LocationDescription}\n` +
         `Remaining today: ${remaining}/${LIMITS.bookingsPerDay}`
       );
-    }
+    })
   );
 
   server.tool(
@@ -158,8 +167,7 @@ export function createServer(): McpServer {
       date: dateSchema,
       time: timeSchema.optional().describe("HH:MM 24h. Omit to cancel first match on this date."),
     },
-    async ({ date, time }) => {
-      const { token, cookies } = getEthosAuth();
+    async ({ date, time }) => withSession(env, async ({ token, cookies }) => {
       const bookings = await getBookings(token, cookies);
       const cancellable = bookings.filter((b) => b.CanCancel && b.StartTime.startsWith(date));
       if (cancellable.length === 0) {
@@ -178,15 +186,14 @@ export function createServer(): McpServer {
       }
       await cancelBooking(token, match, cookies);
       return text(`CANCELLED: ${match.Activity} | ${date} ${formatTime(match.StartTime)}`);
-    }
+    })
   );
 
   server.tool(
     "my_bookings",
     `Show upcoming bookings with per-day usage out of ${LIMITS.bookingsPerDay} daily slots. Returns: Activity | Date | Time | Location | CanCancel. Call this before book_session to check remaining capacity.`,
     {},
-    async () => {
-      const { token, cookies } = getEthosAuth();
+    async () => withSession(env, async ({ token, cookies }) => {
       const bookings = await getBookings(token, cookies);
       const now = new Date().toISOString();
       const upcoming = bookings
@@ -221,7 +228,7 @@ export function createServer(): McpServer {
         (b) => `${b.Activity} | ${b.StartTime.slice(0, 10)} | ${formatTime(b.StartTime)} | ${b.Location} | ${b.CanCancel ? "Yes" : "No"}`
       );
       return text(`${summary.join("\n")}\n\n${header}\n${sep}\n${rows.join("\n")}`);
-    }
+    })
   );
 
   server.tool(
@@ -234,8 +241,7 @@ export function createServer(): McpServer {
       activity: z.string().optional().describe("Case-insensitive partial match, e.g. 'gym' or 'swim'"),
       location: z.enum(["gym", "sw7", "pool", "all"]).default("all").describe("gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool, all=no filter"),
     },
-    async ({ start_date, end_date, time_preference, activity, location }) => {
-      const { token, personId, cookies } = getEthosAuth();
+    async ({ start_date, end_date, time_preference, activity, location }) => withSession(env, async ({ token, personId, cookies }) => {
       const timeFilter = (s: EthosSession): boolean => {
         const hour = parseInt(formatTime(s.StartTime).split(":")[0] ?? "0");
         switch (time_preference) {
@@ -275,7 +281,7 @@ export function createServer(): McpServer {
 
       if (results.length === 0) return text(`${meta}\n\nNo available sessions found.`);
       return text(`${meta}\n\n${limitsBlock()}\n\n${results.join("\n")}`);
-    }
+    })
   );
 
   return server;
