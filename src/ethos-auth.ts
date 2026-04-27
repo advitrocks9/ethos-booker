@@ -37,6 +37,27 @@ class CookieJar {
   }
 }
 
+// Imperial's site serves a different page based on User-Agent and Accept
+// headers — workerd's default UA gets a non-redirecting response, so we set
+// a realistic browser UA and Accept header for the entire login flow.
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-GB,en;q=0.9",
+};
+
+function mergeHeaders(...sources: HeadersInit[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const src of sources) {
+    for (const [k, v] of new Headers(src).entries()) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 async function followRedirects(
   url: string,
   jar: CookieJar,
@@ -44,11 +65,18 @@ async function followRedirects(
   maxRedirects = 15
 ): Promise<{ response: Response; finalUrl: string }> {
   let currentUrl = url;
-  let currentInit: RequestInit = { ...init, redirect: "manual" };
+  const baseHeaders = mergeHeaders(
+    BROWSER_HEADERS,
+    (init?.headers as HeadersInit) ?? {}
+  );
   const cookieHeader = jar.header();
-  if (cookieHeader) {
-    currentInit.headers = { ...Object.fromEntries(new Headers(currentInit.headers as HeadersInit).entries()), Cookie: cookieHeader };
-  }
+  if (cookieHeader) baseHeaders["Cookie"] = cookieHeader;
+
+  let currentInit: RequestInit = {
+    ...init,
+    redirect: "manual",
+    headers: baseHeaders,
+  };
 
   for (let i = 0; i < maxRedirects; i++) {
     const response = await fetch(currentUrl, currentInit);
@@ -63,9 +91,13 @@ async function followRedirects(
         ? location
         : new URL(location, currentUrl).toString();
 
+      const nextHeaders = { ...BROWSER_HEADERS };
+      const nextCookies = jar.header();
+      if (nextCookies) nextHeaders["Cookie"] = nextCookies;
+
       currentInit = {
         redirect: "manual",
-        headers: { Cookie: jar.header() },
+        headers: nextHeaders,
       };
       continue;
     }
