@@ -115,16 +115,42 @@ export function formatSessionLine(s: EthosSession): string {
   return `${s.DisplayName} | ${time}-${end} | ${spaces} | ${s.LocationDescription} | ${price}`;
 }
 
-export function locationFilter(location: string): (s: EthosSession) => boolean {
-  switch (location) {
-    case "gym":
-      return (s) => s.GroupCode.trim() === "GYM1";
-    case "sw7":
-      return (s) => s.GroupCode.trim() === "1SW7";
-    case "pool":
-      return (s) => s.GroupCode.trim() === "SNT1";
-    case "all":
-    default:
-      return () => true;
-  }
+// Ethos GroupCodes as they appear in the timetable API (values are space-padded,
+// hence the trim). Only free sessions go through OneClick/Foc, so paid
+// activities are listable but not bookable.
+export const LOCATIONS = {
+  gym: { group: "GYM1", label: "Ethos Gym", bookable: true },
+  sw7: { group: "1SW7", label: "1SW7 Gym", bookable: true },
+  pool: { group: "STT1", label: "Ethos Pool", bookable: true },
+  induction: { group: "GIND", label: "Gym induction", bookable: true },
+  classes: { group: "CT", label: "Fitness classes (paid)", bookable: false },
+  squash: { group: "SQ", label: "Squash courts (paid)", bookable: false },
+  climbing: { group: "Climb", label: "Climbing wall (paid)", bookable: false },
+} as const;
+
+export type Location = keyof typeof LOCATIONS;
+
+const ALL_LOCATIONS = Object.keys(LOCATIONS) as Location[];
+export const LISTABLE_LOCATIONS: [Location | "all", ...(Location | "all")[]] = ["all", ...ALL_LOCATIONS];
+export const BOOKABLE_LOCATIONS = ALL_LOCATIONS.filter((k) => LOCATIONS[k].bookable) as [Location, ...Location[]];
+
+// "gym=Ethos Gym, pool=Ethos Pool, ..." for tool and parameter descriptions
+export function describeLocations(keys: readonly (Location | "all")[]): string {
+  return keys
+    .map((k) => (k === "all" ? "all=everything" : `${k}=${LOCATIONS[k].label}`))
+    .join(", ");
+}
+
+export function locationFilter(location: Location | "all"): (s: EthosSession) => boolean {
+  if (location === "all") return () => true;
+  const group = LOCATIONS[location].group;
+  return (s) => s.GroupCode.trim() === group;
+}
+
+// Ethos timestamps are naive Europe/London times ("2026-11-19T14:00:00"),
+// so compare against London wall-clock time rather than UTC.
+export function londonNow(): string {
+  return new Date()
+    .toLocaleString("sv-SE", { timeZone: "Europe/London", hour12: false })
+    .replace(" ", "T");
 }

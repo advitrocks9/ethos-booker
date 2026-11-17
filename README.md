@@ -14,6 +14,20 @@ Runs on Cloudflare Workers. Single-user: deploy your own instance, store your Im
 | `my_bookings` | List your upcoming bookings |
 | `search_sessions` | Search across a date range with time/activity filters |
 
+### Locations
+
+| Code | What | Ethos GroupCode | Bookable |
+|------|------|-----------------|----------|
+| `gym` | Ethos Gym | `GYM1` | Yes (free) |
+| `sw7` | 1SW7 Gym | `1SW7` | Yes (free) |
+| `pool` | Ethos Pool | `STT1` | Yes (free) |
+| `induction` | Gym induction | `GIND` | Yes (free) |
+| `classes` | Fitness classes (Yoga, Spin, Body Pump, …) | `CT` | No — £3.50, list/search only |
+| `squash` | Squash courts | `SQ` | No — £9, list/search only |
+| `climbing` | Climbing wall | `Climb` | No — £5, list/search only |
+
+Booking goes through Ethos's free-of-charge one-click endpoint, so only £0 sessions can be booked. Paid activities show up in `list_sessions` / `search_sessions` with their price so you can find a slot, then book it on the Ethos website. Locations are defined in one table (`LOCATIONS` in `src/utils.ts`); tool enums and descriptions are generated from it.
+
 ## Connect to your deployed instance
 
 Once you've deployed (see below), the same URL works on every device — paste it once per client, click Connect, done.
@@ -58,7 +72,24 @@ npx wrangler deploy
 
 Wrangler will print the worker URL — append `/mcp` and use it as your connector URL.
 
-For local development, copy `.dev.vars.example` to `.dev.vars` and fill in real credentials. `.dev.vars` is gitignored.
+For local development, copy `.dev.vars.example` to `.dev.vars` and fill in real credentials. `.dev.vars` is gitignored. `ETHOS_EMAIL` must be the long-form `firstname.lastname@imperial.ac.uk` address you log into Ethos with — the short `ab1234@ic.ac.uk` alias is rejected.
+
+To bulk-upload the same file as production secrets: `npx wrangler secret bulk .dev.vars`.
+
+### Smoke test
+
+`scripts/smoke-test.sh` runs the full OAuth flow (dynamic client registration + PKCE, the same way claude.ai connects) and then calls the read-only tools. Needs `curl` and `python3`.
+
+```bash
+npx wrangler dev                                  # in one terminal
+scripts/smoke-test.sh http://127.0.0.1:8787       # in another
+scripts/smoke-test.sh https://ethos-booker.<your-subdomain>.workers.dev
+
+# optional real round-trip: books a slot, then cancels it immediately
+BOOK_TIME=21:00 BOOK_LOCATION=pool BOOK_DAYS_AHEAD=2 scripts/smoke-test.sh <url>
+```
+
+Right after the first deploy to a new `workers.dev` subdomain, some requests may return Cloudflare `error code: 1042` for a few minutes while it propagates.
 
 ## How auth works
 

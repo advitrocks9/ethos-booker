@@ -28,6 +28,15 @@ export const authHandler = {
       return new Response("Too many authorization attempts", { status: 429 });
     }
 
+    // Validate the OAuth request before spending an Ethos login on it.
+    let oauthReqInfo: unknown;
+    try {
+      oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Invalid authorization request";
+      return new Response(`Invalid authorization request: ${msg}`, { status: 400 });
+    }
+
     // Verify the server can actually log into Ethos before issuing an OAuth
     // grant. Otherwise the client gets a token that fails on every tool call.
     try {
@@ -40,8 +49,6 @@ export const authHandler = {
         { status: 502 }
       );
     }
-
-    const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
 
     const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
       request: oauthReqInfo,
