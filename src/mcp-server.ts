@@ -3,7 +3,15 @@ import { z } from "zod";
 import type { EthosSession, Env } from "./types";
 import { listSessions, bookSession, getBookings, cancelBooking } from "./ethos-api";
 import { resolveEthosSession, invalidateEthosSession } from "./session";
-import { formatSessionLine, locationFilter, formatTime } from "./utils";
+import {
+  formatSessionLine,
+  locationFilter,
+  formatTime,
+  londonNow,
+  describeLocations,
+  LISTABLE_LOCATIONS,
+  BOOKABLE_LOCATIONS,
+} from "./utils";
 
 const LIMITS = {
   bookingsPerDay: 2,
@@ -26,10 +34,18 @@ function text(t: string) {
 }
 
 function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+  return londonNow().slice(0, 10);
 }
 
 const dateSchema = z.iso.date().describe("YYYY-MM-DD, today or within 7 days");
+const listLocationSchema = z
+  .enum(LISTABLE_LOCATIONS)
+  .default("all")
+  .describe(describeLocations(LISTABLE_LOCATIONS));
+const bookLocationSchema = z
+  .enum(BOOKABLE_LOCATIONS)
+  .default("gym")
+  .describe(describeLocations(BOOKABLE_LOCATIONS));
 const timeSchema = z.string().regex(/^\d{2}:\d{2}$/, "Expected HH:MM").describe("Start time HH:MM 24h, e.g. '14:00'. Must match exactly.");
 
 // Wrap a tool body so that Ethos 401-style failures (HTML responses, "session
@@ -66,10 +82,10 @@ export function createServer(env: Env): McpServer {
 
   server.tool(
     "list_sessions",
-    `List gym/swim/sport sessions for a single date. Returns a table: Name | Time | Spaces (available/total) | Location | Price. Date must be within ${LIMITS.advanceDays} days of today. Returns up to ${LIMITS.listResults} results. Set available_only=true to hide fully booked sessions. Location codes: gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool, all=everything.`,
+    `List gym/swim/sport sessions for a single date. Returns a table: Name | Time | Spaces (available/total) | Location | Price. Date must be within ${LIMITS.advanceDays} days of today. Returns up to ${LIMITS.listResults} results. Set available_only=true to hide fully booked sessions. Location codes: ${describeLocations(LISTABLE_LOCATIONS)}.`,
     {
       date: dateSchema,
-      location: z.enum(["gym", "sw7", "pool", "all"]).default("all").describe("gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool, all=no filter"),
+      location: listLocationSchema,
       available_only: z.boolean().default(false).describe("If true, hide sessions with 0 open spots. Set true when planning to book."),
     },
     async ({ date, location, available_only }) => withSession(env, async ({ token, personId, cookies }) => {
@@ -99,11 +115,11 @@ export function createServer(env: Env): McpServer {
 
   server.tool(
     "book_session",
-    `Book a single free (£0) gym/swim session. Max ${LIMITS.bookingsPerDay} bookings per day, date must be within ${LIMITS.advanceDays} days of today. Returns available alternatives if session is full or not found. Call my_bookings first to check remaining daily capacity. For multiple sessions, call this tool once per session.`,
+    `Book a single free (£0) session at one of: ${describeLocations(BOOKABLE_LOCATIONS)}. Paid activities (classes, squash, climbing) can be listed but must be booked on the Ethos website. Max ${LIMITS.bookingsPerDay} bookings per day, date must be within ${LIMITS.advanceDays} days of today. Returns available alternatives if session is full or not found. Call my_bookings first to check remaining daily capacity. For multiple sessions, call this tool once per session.`,
     {
       date: dateSchema,
       time: timeSchema,
-      location: z.enum(["gym", "sw7", "pool"]).default("gym").describe("gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool"),
+      location: bookLocationSchema,
     },
     async ({ date, time, location }) => withSession(env, async ({ token, personId, cookies }) => {
       const bookings = await getBookings(token, cookies);
@@ -195,7 +211,7 @@ export function createServer(env: Env): McpServer {
     {},
     async () => withSession(env, async ({ token, cookies }) => {
       const bookings = await getBookings(token, cookies);
-      const now = new Date().toISOString();
+      const now = londonNow();
       const upcoming = bookings
         .filter((b) => b.StartTime > now)
         .sort((a, b) => a.StartTime.localeCompare(b.StartTime))
@@ -239,7 +255,7 @@ export function createServer(env: Env): McpServer {
       end_date: z.iso.date().describe("YYYY-MM-DD, max 7 days from start_date"),
       time_preference: z.enum(["morning", "afternoon", "evening", "any"]).default("any").describe("morning=07-12, afternoon=12-18, evening=18+, any=all"),
       activity: z.string().optional().describe("Case-insensitive partial match, e.g. 'gym' or 'swim'"),
-      location: z.enum(["gym", "sw7", "pool", "all"]).default("all").describe("gym=Ethos Gym, sw7=1SW7 Gym, pool=Ethos Pool, all=no filter"),
+      location: listLocationSchema,
     },
     async ({ start_date, end_date, time_preference, activity, location }) => withSession(env, async ({ token, personId, cookies }) => {
       const timeFilter = (s: EthosSession): boolean => {
